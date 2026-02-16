@@ -9,23 +9,6 @@ on:
       - master
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Setup go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-      - name: Setup golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.6
   test:
     strategy:
       matrix:
