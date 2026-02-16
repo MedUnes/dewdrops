@@ -15,7 +15,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
-// Config
 const DefaultOutputFileName = "dewdrops_context.md"
 
 func main() {
@@ -46,7 +45,6 @@ func Run(rootDir string, outputFile string) error {
 
 	fmt.Printf("💧 dewdrops: Scanning '%s'...\n", rootDir)
 
-	// 1. Setup Git Ignore (Pure Go)
 	var matcher gitignore.Matcher
 	ignorePath := filepath.Join(rootDir, ".gitignore")
 	if _, err := os.Stat(ignorePath); err == nil {
@@ -69,7 +67,6 @@ func Run(rootDir string, outputFile string) error {
 		}
 	}
 
-	// 2. Collect Paths
 	var filePaths []string
 
 	err = filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
@@ -82,7 +79,6 @@ func Run(rootDir string, outputFile string) error {
 			return nil
 		}
 
-		// Always skip .git
 		pathParts := strings.Split(relPath, string(os.PathSeparator))
 		for _, p := range pathParts {
 			if p == ".git" {
@@ -90,7 +86,6 @@ func Run(rootDir string, outputFile string) error {
 			}
 		}
 
-		// Check .gitignore
 		if matcher != nil {
 			isDir := info.IsDir()
 			if matcher.Match(pathParts, isDir) {
@@ -121,7 +116,6 @@ func Run(rootDir string, outputFile string) error {
 
 	sort.Strings(filePaths)
 
-	// 3. Generate Output
 	outFile, err := os.Create(outputFile)
 	if err != nil {
 		return err
@@ -129,15 +123,13 @@ func Run(rootDir string, outputFile string) error {
 	defer outFile.Close()
 	writer := bufio.NewWriter(outFile)
 
-	// --- WRITE TREE ---
 	writer.WriteString("# Repository Context\n\n## Structure\n\n```text\n")
-	// Simple Pure Go Tree Visualization
+
 	for _, p := range filePaths {
 		writer.WriteString(fmt.Sprintf("├── %s\n", p))
 	}
 	writer.WriteString("```\n\n## File Contents\n\n")
 
-	// --- WRITE CONTENT & STATS ---
 	var totalFiles, maxDepth int
 	fileTypes := make(map[string]int)
 
@@ -153,20 +145,17 @@ func Run(rootDir string, outputFile string) error {
 
 		totalFiles++
 
-		// Stats: Depth
 		depth := strings.Count(relPath, string(os.PathSeparator)) + 1
 		if depth > maxDepth {
 			maxDepth = depth
 		}
 
-		// Stats: Extension
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(relPath), "."))
 		if ext == "" {
 			ext = "no_ext"
 		}
 		fileTypes[ext]++
 
-		// Content
 		writer.WriteString(fmt.Sprintf("### file: %s\n", relPath))
 		writer.WriteString(fmt.Sprintf("```%s\n", getLanguageID(ext)))
 		writer.Write(content)
@@ -177,7 +166,6 @@ func Run(rootDir string, outputFile string) error {
 	}
 	writer.Flush()
 
-	// --- CLI REPORT ---
 	fi, _ := outFile.Stat()
 	fileSizeMB := float64(fi.Size()) / 1024 / 1024
 
@@ -189,7 +177,6 @@ func Run(rootDir string, outputFile string) error {
 	fmt.Printf("Dump Size           : %.2f MB (%s)\n", fileSizeMB, outputFile)
 	fmt.Println("")
 
-	// *** THE FILE TYPE HISTOGRAM YOU REQUESTED ***
 	fmt.Println("File Types:")
 
 	keys := make([]string, 0, len(fileTypes))
