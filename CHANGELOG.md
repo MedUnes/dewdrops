@@ -4,6 +4,29 @@ All notable changes to DewDrops will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.1] - 2026-04-10
+
+### Added
+
+- **`--map` extension filtering**: `--map` now accepts an optional value to control which files appear in the map output. `--map` (no value) includes only files with supported signature patterns. `--map=go,py` includes only specific extensions. `--map=any` includes all text files (previous default behavior).
+- **`--version` flag**: Prints the current version. Version injected via goreleaser ldflags at release time; local builds show `dev`.
+- **PHP signature test**: Verifies indented class methods are captured.
+- 3 new tests for map extension filtering, 1 new test for PHP signatures.
+
+### Fixed
+
+- **PHP, Java/Kotlin, Ruby, JS/TS, Rust signature extraction**: Changed regex patterns from `^` (column 0 only) to `^\s*` so indented class/impl methods are captured. Previously only top-level class declarations matched; all methods inside classes were missed.
+
+### Changed
+
+- **Multi-file layout**: Refactored from single `main.go` (~1,100 lines) into 7 focused files: `main.go`, `run.go`, `git.go`, `tree.go`, `signatures.go`, `writers.go`, `util.go`. No behavioral changes.
+- **Unified tree renderer**: Replaced `treeNode.modTime` / `treeLine.modTime` field overloading with explicit `annotation` + `showTokens` fields. Deleted `formatSinceTreeOutput` — unified into single `formatTreeOutput`.
+- **`displayWidth`** now uses `utf8.RuneCountInString` (idiomatic Go).
+- **Git stderr suppressed**: All `exec.Command("git", ...)` calls now set `cmd.Stderr = nil` to prevent git warnings leaking to the user's terminal.
+- **Scanning message** now prints to stderr (Unix convention: diagnostics to stderr).
+- **Oversize warning** extracted into `checkOutputSize()` helper (was duplicated inline).
+- Default `--map` (no value) now excludes config/data files (.yaml, .json, .toml, .env, .gitignore) whose fallback signatures (first 3 lines) are noise.
+
 ## [0.3.0] - 2026-04-10
 
 ### Added
