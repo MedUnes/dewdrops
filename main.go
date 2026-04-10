@@ -11,23 +11,28 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
 const DefaultOutputFileName = "dewdrops_context.md"
+const warnTokenThreshold = 100_000
 
 // RunOptions configures the behavior of Run.
 type RunOptions struct {
 	MapMode    bool
 	FromPaths  []string
 	OutputFile string
+	SinceRef   string
 }
 
 func main() {
 	mapFlag := flag.Bool("map", false, "Output structural map instead of full file contents")
 	fromFlag := flag.String("from", "", "Comma-separated list of file/dir paths to include")
+	sinceFlag := flag.String("since", "", "Git ref to diff against HEAD (branch, tag, hash, HEAD~N)")
+	outputFlag := flag.String("o", "", "Output file path (default: dewdrops_context.md)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: dewdrops [options] <repo-path>
@@ -37,6 +42,11 @@ Options:
                      instead of full file contents
   --from <paths>     Only include specified files/dirs (comma-separated, relative
                      to repo root). Example: --from src/main.go,internal/auth/
+  --since <ref>      Diff-aware output: map + diff + content for files changed
+                     between <ref> and HEAD. Accepts branch names, tags, commit
+                     hashes, or relative refs like HEAD~3.
+                     Cannot be combined with --map or --from.
+  -o <path>          Output file path (default: dewdrops_context.md)
   -h, --help         Show this help message
 
 Examples:
@@ -44,6 +54,8 @@ Examples:
   dewdrops --map .                                  # Structural overview only
   dewdrops --from internal/auth/ .                  # Dump specific directory
   dewdrops --map --from internal/auth/,cmd/ .       # Map of specific subtree
+  dewdrops --since main .                           # Review changes vs main
+  dewdrops --since HEAD~3 -o review.md .            # Last 3 commits, custom path
 `)
 	}
 	flag.Parse()
@@ -58,6 +70,15 @@ Examples:
 	opts := RunOptions{
 		MapMode:    *mapFlag,
 		OutputFile: DefaultOutputFileName,
+	}
+	if *outputFlag != "" {
+		opts.OutputFile = *outputFlag
+	}
+	if *sinceFlag != "" {
+		opts.SinceRef = *sinceFlag
+		if *outputFlag == "" {
+			opts.OutputFile = sinceOutputFileName(*sinceFlag)
+		}
 	}
 	if *fromFlag != "" {
 		opts.FromPaths = strings.Split(*fromFlag, ",")
@@ -81,7 +102,53 @@ func Run(rootDir string, opts RunOptions) error {
 	}
 	outputBase := filepath.Base(outputFile)
 
+	if opts.SinceRef != "" && (opts.MapMode || len(opts.FromPaths) > 0) {
+		return fmt.Errorf("--since cannot be combined with --map or --from.\n   --since produces its own composite output (map + diff + content).")
+	}
+
 	fmt.Printf("dewdrops: Scanning '%s'💧💧💧\n", rootDir)
+
+	if opts.SinceRef != "" {
+		outFile, err := os.Create(outputFile)
+		if err != nil {
+			return err
+		}
+		defer outFile.Close()
+		writer := bufio.NewWriter(outFile)
+
+		stats, err := writeSinceOutput(writer, rootDir, opts.SinceRef)
+		if err != nil {
+			return err
+		}
+		writer.Flush()
+
+		fi, _ := outFile.Stat()
+		fileSizeMB := float64(fi.Size()) / 1024 / 1024
+
+		if stats.filesChanged > 0 {
+			shortHead := gitShortHash(rootDir, "HEAD")
+			shortRef := gitShortHash(rootDir, opts.SinceRef)
+			fmt.Println("\n------------------------------------------------")
+			fmt.Printf("Since Summary (%s vs %s)\n", shortRef, shortHead)
+			fmt.Println("------------------------------------------------")
+			fmt.Printf("Files Changed       : %d (%d modified, %d added, %d deleted)\n",
+				stats.filesChanged, stats.filesModified, stats.filesAdded, stats.filesDeleted)
+			fmt.Printf("Signatures Extracted: %d\n", stats.sigCount)
+			fmt.Printf("Estimated Tokens    : %s\n", formatNumber(stats.totalTokens))
+			fmt.Printf("Output Size         : %.3f MB (%s)\n", fileSizeMB, outputFile)
+			fmt.Println("------------------------------------------------")
+		}
+
+		if fi, err := outFile.Stat(); err == nil {
+			estimatedTokens := fi.Size() / 4
+			if estimatedTokens > warnTokenThreshold {
+				fmt.Fprintf(os.Stderr, "\n⚠️  Output is ~%s tokens. This may exceed your LLM's context window.\n", formatNumber(int(estimatedTokens)))
+				fmt.Fprintln(os.Stderr, "    Consider using --map first, then --from with specific files.")
+			}
+		}
+
+		return nil
+	}
 
 	matcher := loadGitignore(rootDir)
 
@@ -173,6 +240,14 @@ func Run(rootDir string, opts RunOptions) error {
 			fmt.Printf("  .%-10s : %d\n", k, stats.fileTypes[k])
 		}
 		fmt.Println("------------------------------------------------")
+	}
+
+	if fi, err := outFile.Stat(); err == nil {
+		estimatedTokens := fi.Size() / 4
+		if estimatedTokens > warnTokenThreshold {
+			fmt.Fprintf(os.Stderr, "\n⚠️  Output is ~%s tokens. This may exceed your LLM's context window.\n", formatNumber(int(estimatedTokens)))
+			fmt.Fprintln(os.Stderr, "    Consider using --map first, then --from with specific files.")
+		}
 	}
 
 	return nil
@@ -320,8 +395,8 @@ func writeMapOutput(writer *bufio.Writer, rootDir string, filePaths []string) ma
 	var stats mapStats
 
 	tokenMap := make(map[string]int)
-	modTimeMap := make(map[string]string)
 	sigMap := make(map[string][]string)
+	modTimeMap := batchGitModTimes(rootDir, filePaths)
 
 	for _, relPath := range filePaths {
 		fullPath := filepath.Join(rootDir, relPath)
@@ -333,8 +408,6 @@ func writeMapOutput(writer *bufio.Writer, rootDir string, filePaths []string) ma
 		tokens := estimateTokens(content)
 		tokenMap[relPath] = tokens
 		stats.totalTokens += tokens
-
-		modTimeMap[relPath] = getGitModTime(rootDir, relPath)
 
 		if isText(content) {
 			sigs := extractSignatures(relPath, content)
@@ -354,11 +427,11 @@ func writeMapOutput(writer *bufio.Writer, rootDir string, filePaths []string) ma
 	writer.WriteString(fmt.Sprintf("# Repository Map: %s\n", dirName))
 	writer.WriteString(fmt.Sprintf("%d files | ~%s tokens (estimated)\n\n", stats.filesScanned, formatNumber(stats.totalTokens)))
 
-	writer.WriteString("## Structure\n\n")
+	writer.WriteString("## Structure\n\n```text\n")
 	root := buildTree(filePaths, tokenMap, modTimeMap)
 	lines := renderTreeLines(root)
 	writer.WriteString(formatTreeOutput(lines))
-	writer.WriteString("\n")
+	writer.WriteString("```\n\n")
 
 	writer.WriteString("## Signatures\n\n")
 	for _, relPath := range filePaths {
@@ -534,91 +607,368 @@ func extractSignatures(filePath string, content []byte) []string {
 	return result
 }
 
+var (
+	goSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^func `),
+		regexp.MustCompile(`^type .*struct`),
+		regexp.MustCompile(`^type .*interface`),
+		regexp.MustCompile(`^var `),
+		regexp.MustCompile(`^const `),
+	}
+	pySigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^class `),
+		regexp.MustCompile(`^def `),
+		regexp.MustCompile(`^async def `),
+	}
+	jsSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^export `),
+		regexp.MustCompile(`^function `),
+		regexp.MustCompile(`^class `),
+		regexp.MustCompile(`^interface `),
+		regexp.MustCompile(`^type `),
+		regexp.MustCompile(`^const .*=>`),
+		regexp.MustCompile(`^async function `),
+	}
+	rsSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^pub fn `),
+		regexp.MustCompile(`^fn `),
+		regexp.MustCompile(`^pub struct `),
+		regexp.MustCompile(`^struct `),
+		regexp.MustCompile(`^enum `),
+		regexp.MustCompile(`^pub enum `),
+		regexp.MustCompile(`^trait `),
+		regexp.MustCompile(`^impl `),
+	}
+	javaSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^public `),
+		regexp.MustCompile(`^private `),
+		regexp.MustCompile(`^protected `),
+		regexp.MustCompile(`^class `),
+		regexp.MustCompile(`^interface `),
+		regexp.MustCompile(`^enum `),
+		regexp.MustCompile(`^abstract `),
+	}
+	rbSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^class `),
+		regexp.MustCompile(`^module `),
+		regexp.MustCompile(`^def `),
+	}
+	phpSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^class `),
+		regexp.MustCompile(`^function `),
+		regexp.MustCompile(`^interface `),
+		regexp.MustCompile(`^trait `),
+		regexp.MustCompile(`^public function `),
+		regexp.MustCompile(`^private function `),
+		regexp.MustCompile(`^protected function `),
+	}
+	cSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^typedef `),
+		regexp.MustCompile(`^struct `),
+		regexp.MustCompile(`^enum `),
+	}
+	sqlSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)^CREATE `),
+		regexp.MustCompile(`(?i)^ALTER `),
+		regexp.MustCompile(`(?i)^DROP `),
+	}
+	shSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^function `),
+		regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*\(\)`),
+	}
+	mdSigPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`^#{1,6} `),
+	}
+)
+
 func sigPatternsForExt(ext string) (patterns []*regexp.Regexp, cMode bool, fallback bool) {
 	switch ext {
 	case ".go":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^func `),
-			regexp.MustCompile(`^type .*struct`),
-			regexp.MustCompile(`^type .*interface`),
-			regexp.MustCompile(`^var `),
-			regexp.MustCompile(`^const `),
-		}
+		patterns = goSigPatterns
 	case ".py":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^class `),
-			regexp.MustCompile(`^def `),
-			regexp.MustCompile(`^async def `),
-		}
+		patterns = pySigPatterns
 	case ".js", ".ts", ".jsx", ".tsx":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^export `),
-			regexp.MustCompile(`^function `),
-			regexp.MustCompile(`^class `),
-			regexp.MustCompile(`^interface `),
-			regexp.MustCompile(`^type `),
-			regexp.MustCompile(`^const .*=>`),
-			regexp.MustCompile(`^async function `),
-		}
+		patterns = jsSigPatterns
 	case ".rs":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^pub fn `),
-			regexp.MustCompile(`^fn `),
-			regexp.MustCompile(`^pub struct `),
-			regexp.MustCompile(`^struct `),
-			regexp.MustCompile(`^enum `),
-			regexp.MustCompile(`^pub enum `),
-			regexp.MustCompile(`^trait `),
-			regexp.MustCompile(`^impl `),
-		}
+		patterns = rsSigPatterns
 	case ".java", ".kt":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^public `),
-			regexp.MustCompile(`^private `),
-			regexp.MustCompile(`^protected `),
-			regexp.MustCompile(`^class `),
-			regexp.MustCompile(`^interface `),
-			regexp.MustCompile(`^enum `),
-			regexp.MustCompile(`^abstract `),
-		}
+		patterns = javaSigPatterns
 	case ".rb":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^class `),
-			regexp.MustCompile(`^module `),
-			regexp.MustCompile(`^def `),
-		}
+		patterns = rbSigPatterns
 	case ".php":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^class `),
-			regexp.MustCompile(`^function `),
-			regexp.MustCompile(`^interface `),
-			regexp.MustCompile(`^trait `),
-			regexp.MustCompile(`^public function `),
-			regexp.MustCompile(`^private function `),
-			regexp.MustCompile(`^protected function `),
-		}
+		patterns = phpSigPatterns
 	case ".c", ".h", ".cpp", ".hpp":
 		cMode = true
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^typedef `),
-			regexp.MustCompile(`^struct `),
-			regexp.MustCompile(`^enum `),
-		}
+		patterns = cSigPatterns
 	case ".sql":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`(?i)^CREATE `),
-			regexp.MustCompile(`(?i)^ALTER `),
-			regexp.MustCompile(`(?i)^DROP `),
-		}
+		patterns = sqlSigPatterns
 	case ".sh", ".bash":
-		patterns = []*regexp.Regexp{
-			regexp.MustCompile(`^function `),
-			regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*\(\)`),
-		}
+		patterns = shSigPatterns
+	case ".md", ".markdown":
+		patterns = mdSigPatterns
 	default:
 		fallback = true
 	}
 	return
+}
+
+type fileChange struct {
+	Status  string // "M", "A", "D", "R"
+	Path    string // current path (for R: new path)
+	OldPath string // only set for renames
+}
+
+type sinceStats struct {
+	filesChanged  int
+	filesAdded    int
+	filesModified int
+	filesDeleted  int
+	totalTokens   int
+	sigCount      int
+}
+
+func gitShortHash(rootDir, ref string) string {
+	cmd := exec.Command("git", "rev-parse", "--short", ref)
+	cmd.Dir = rootDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ref
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitDiff(rootDir, ref string) string {
+	cmd := exec.Command("git", "diff", ref, "HEAD")
+	cmd.Dir = rootDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func gitDiffNameStatus(rootDir, ref string) []fileChange {
+	cmd := exec.Command("git", "diff", "--name-status", ref, "HEAD")
+	cmd.Dir = rootDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var changes []fileChange
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		status := parts[0]
+		fc := fileChange{}
+		if strings.HasPrefix(status, "R") {
+			fc.Status = "R"
+			fc.OldPath = parts[1]
+			if len(parts) >= 3 {
+				fc.Path = parts[2]
+			}
+		} else {
+			fc.Status = status
+			fc.Path = parts[1]
+		}
+		changes = append(changes, fc)
+	}
+	return changes
+}
+
+func sinceOutputFileName(ref string) string {
+	safe := strings.NewReplacer("~", "_", "^", "_", "/", "_", "\\", "_", "..", "_").Replace(ref)
+	return fmt.Sprintf("dewdrops_since_%s.md", safe)
+}
+
+func writeSinceOutput(writer *bufio.Writer, rootDir string, ref string) (sinceStats, error) {
+	var stats sinceStats
+
+	cmd := exec.Command("git", "rev-parse", "--short", ref)
+	cmd.Dir = rootDir
+	if _, err := cmd.Output(); err != nil {
+		return stats, fmt.Errorf("Invalid git ref: %s", ref)
+	}
+
+	changes := gitDiffNameStatus(rootDir, ref)
+	if len(changes) == 0 {
+		fmt.Fprintf(os.Stderr, "⚠️  No changes found between %s and HEAD.\n", ref)
+		return stats, nil
+	}
+
+	stats.filesChanged = len(changes)
+
+	for _, c := range changes {
+		switch c.Status {
+		case "A":
+			stats.filesAdded++
+		case "M":
+			stats.filesModified++
+		case "D":
+			stats.filesDeleted++
+		}
+	}
+
+	tokenMap := make(map[string]int)
+	sigMap := make(map[string][]string)
+	contentMap := make(map[string][]byte)
+	statusMap := make(map[string]string)
+	var nonDeletedPaths []string
+
+	for _, c := range changes {
+		statusMap[c.Path] = c.Status
+		if c.OldPath != "" {
+			statusMap[c.Path] = "R"
+		}
+		if c.Status == "D" {
+			continue
+		}
+		fullPath := filepath.Join(rootDir, c.Path)
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+		if !isText(content) {
+			continue
+		}
+		nonDeletedPaths = append(nonDeletedPaths, c.Path)
+		contentMap[c.Path] = content
+		tokens := estimateTokens(content)
+		tokenMap[c.Path] = tokens
+		stats.totalTokens += tokens
+
+		sigs := extractSignatures(c.Path, content)
+		if len(sigs) > 0 {
+			sigMap[c.Path] = sigs
+			stats.sigCount += len(sigs)
+		}
+	}
+
+	sort.Strings(nonDeletedPaths)
+
+	shortHead := gitShortHash(rootDir, "HEAD")
+	shortRef := gitShortHash(rootDir, ref)
+	writer.WriteString(fmt.Sprintf("# Changes: %s vs %s\n", shortHead, shortRef))
+	writer.WriteString(fmt.Sprintf("%d files changed | ~%s tokens (estimated)\n\n", stats.filesChanged, formatNumber(stats.totalTokens)))
+
+	writer.WriteString("## Map of Changed Files\n\n```text\n")
+	sinceTree := buildSinceTree(changes, tokenMap, statusMap)
+	sinceLines := renderTreeLines(sinceTree)
+	writer.WriteString(formatSinceTreeOutput(sinceLines))
+	writer.WriteString("```\n\n")
+
+	for _, path := range nonDeletedPaths {
+		sigs, ok := sigMap[path]
+		if !ok || len(sigs) == 0 {
+			continue
+		}
+		writer.WriteString(fmt.Sprintf("### %s\n", path))
+		for _, sig := range sigs {
+			writer.WriteString(sig + "\n")
+		}
+		writer.WriteString("\n")
+	}
+
+	writer.WriteString("## Diff\n\n```diff\n")
+	writer.WriteString(gitDiff(rootDir, ref))
+	writer.WriteString("```\n\n")
+
+	writer.WriteString("## File Contents\n\n")
+	for _, c := range changes {
+		if c.Status == "D" {
+			continue
+		}
+		content, ok := contentMap[c.Path]
+		if !ok {
+			continue
+		}
+		statusLabel := ""
+		switch {
+		case c.OldPath != "":
+			statusLabel = fmt.Sprintf(" [RENAMED from %s]", c.OldPath)
+		case c.Status == "M":
+			statusLabel = " [MODIFIED]"
+		case c.Status == "A":
+			statusLabel = " [ADDED]"
+		}
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(c.Path), "."))
+		if ext == "" {
+			ext = "no_ext"
+		}
+		writer.WriteString(fmt.Sprintf("### file: %s%s\n", c.Path, statusLabel))
+		writer.WriteString(fmt.Sprintf("```%s\n", getLanguageID(ext)))
+		writer.Write(content)
+		if len(content) > 0 && content[len(content)-1] != '\n' {
+			writer.WriteString("\n")
+		}
+		writer.WriteString("```\n\n")
+	}
+
+	return stats, nil
+}
+
+func buildSinceTree(changes []fileChange, tokenMap map[string]int, statusMap map[string]string) *treeNode {
+	root := &treeNode{isDir: true}
+	for _, c := range changes {
+		parts := strings.Split(c.Path, "/")
+		current := root
+		for i, part := range parts {
+			isLast := i == len(parts)-1
+			var child *treeNode
+			for _, ch := range current.children {
+				if ch.name == part {
+					child = ch
+					break
+				}
+			}
+			if child == nil {
+				child = &treeNode{
+					name:  part,
+					isDir: !isLast,
+				}
+				if isLast {
+					child.tokens = tokenMap[c.Path]
+					child.modTime = statusMap[c.Path] // repurpose modTime for status
+				}
+				current.children = append(current.children, child)
+			}
+			current = child
+		}
+	}
+	aggregateTokens(root)
+	return root
+}
+
+func formatSinceTreeOutput(lines []treeLine) string {
+	maxWidth := 0
+	for _, l := range lines {
+		w := displayWidth(l.prefix)
+		if w > maxWidth {
+			maxWidth = w
+		}
+	}
+
+	var sb strings.Builder
+	for _, l := range lines {
+		sb.WriteString(l.prefix)
+		padding := maxWidth - displayWidth(l.prefix) + 2
+		sb.WriteString(strings.Repeat(" ", padding))
+
+		status := l.modTime // modTime holds the status for since mode
+		if status == "D" {
+			sb.WriteString(fmt.Sprintf("(deleted)     [%s]", status))
+		} else if !l.isDir {
+			sb.WriteString(fmt.Sprintf("(~%s tok)  [%s]", formatNumber(l.tokens), status))
+		} else {
+			sb.WriteString(fmt.Sprintf("(~%s tok)", formatNumber(l.tokens)))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func estimateTokens(content []byte) int {
@@ -633,6 +983,30 @@ func getGitModTime(rootDir, relPath string) string {
 		return ""
 	}
 	result := strings.TrimSpace(string(out))
+	return result
+}
+
+func batchGitModTimes(rootDir string, filePaths []string) map[string]string {
+	result := make(map[string]string)
+	var mu sync.Mutex
+	sem := make(chan struct{}, 16)
+	var wg sync.WaitGroup
+
+	for _, relPath := range filePaths {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(rp string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			modTime := getGitModTime(rootDir, rp)
+			if modTime != "" {
+				mu.Lock()
+				result[rp] = modTime
+				mu.Unlock()
+			}
+		}(relPath)
+	}
+	wg.Wait()
 	return result
 }
 
