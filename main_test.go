@@ -137,6 +137,13 @@ func TestMapOutputContainsTree(t *testing.T) {
 	assert.Contains(t, content, "internal/auth/jwt.go")
 	assert.NotContains(t, content, "tmp/ignored.txt")
 	assert.NotContains(t, content, "debug.log")
+
+	// Tree should be wrapped in a fenced code block
+	structIdx := strings.Index(content, "## Structure")
+	sigIdx := strings.Index(content, "## Signatures")
+	treePortion := content[structIdx:sigIdx]
+	assert.Contains(t, treePortion, "```text")
+	assert.Contains(t, treePortion, "```\n")
 }
 
 func TestMapOutputContainsSignatures(t *testing.T) {
@@ -215,6 +222,28 @@ func TestMapFallbackSignatures(t *testing.T) {
 	assert.Contains(t, content, "First line")
 	assert.Contains(t, content, "Second line")
 	assert.Contains(t, content, "Third line")
+}
+
+func TestMapSignatureExtractionMarkdown(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	mdContent := "# My Project\n\nSome intro text.\n\n## Installation\n\nRun this.\n\n## Usage\n\nDo that.\n\n### Advanced\n\nMore stuff.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs.md"), []byte(mdContent), 0644))
+	cmd := exec.Command("git", "add", "docs.md")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "commit", "-m", "add docs")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+
+	assert.Contains(t, content, "# My Project")
+	assert.Contains(t, content, "## Installation")
+	assert.Contains(t, content, "## Usage")
+	assert.Contains(t, content, "### Advanced")
+	assert.NotContains(t, content, "Some intro text.")
+	assert.NotContains(t, content, "Run this.")
 }
 
 // --- Tests for --from ---
@@ -356,4 +385,300 @@ func TestDefaultBehaviorUnchanged(t *testing.T) {
 	assert.Contains(t, content, "### file: internal/auth/jwt.go")
 	assert.Contains(t, content, "### file: README.md")
 	assert.Contains(t, content, "# Test Project")
+}
+
+// --- Tests for oversize warning ---
+
+func TestLargeOutputWarning(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	// Create a 500KB file
+	bigContent := strings.Repeat("x", 500*1024)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "big.txt"), []byte(bigContent), 0644))
+	cmd := exec.Command("git", "add", "big.txt")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "commit", "-m", "add big file")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	err := Run(root, RunOptions{OutputFile: outFile, FromPaths: []string{"big.txt"}})
+
+	w.Close()
+	stderrBytes := make([]byte, 8192)
+	n, _ := r.Read(stderrBytes)
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	assert.Contains(t, string(stderrBytes[:n]), "may exceed your LLM's context window")
+}
+
+func TestSmallOutputNoWarning(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	err := Run(root, RunOptions{OutputFile: outFile})
+
+	w.Close()
+	stderrBytes := make([]byte, 8192)
+	n, _ := r.Read(stderrBytes)
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	assert.NotContains(t, string(stderrBytes[:n]), "may exceed")
+}
+
+// --- Tests for -o flag ---
+
+func TestCustomOutputPath(t *testing.T) {
+	root, _ := setupFixtureRepo(t)
+	customPath := filepath.Join(root, "subdir", "custom_output.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(customPath), 0755))
+
+	err := Run(root, RunOptions{OutputFile: customPath})
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(customPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "### file: main.go")
+}
+
+func TestDefaultOutputPathUnchanged(t *testing.T) {
+	root, _ := setupFixtureRepo(t)
+
+	err := Run(root, RunOptions{OutputFile: filepath.Join(root, DefaultOutputFileName)})
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(root, DefaultOutputFileName))
+	assert.NoError(t, err, "default output file should exist")
+}
+
+// --- Tests for batch git mod-times ---
+
+func TestBatchGitModTimesReturnsResults(t *testing.T) {
+	root, _ := setupFixtureRepo(t)
+	result := batchGitModTimes(root, []string{"main.go", "internal/auth/jwt.go"})
+
+	assert.NotEmpty(t, result["main.go"])
+	assert.NotEmpty(t, result["internal/auth/jwt.go"])
+	// Git relative format contains time words
+	for _, v := range result {
+		assert.True(t, strings.Contains(v, "ago") || strings.Contains(v, "second") || strings.Contains(v, "minute"),
+			"expected git relative time format, got: %s", v)
+	}
+}
+
+func TestBatchGitModTimesHandlesUntracked(t *testing.T) {
+	root, _ := setupFixtureRepo(t)
+
+	// Create an untracked file (not committed)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "untracked.go"), []byte("package main\n"), 0644))
+
+	result := batchGitModTimes(root, []string{"untracked.go", "main.go"})
+
+	// Untracked file should be absent or empty
+	assert.Empty(t, result["untracked.go"])
+	// Tracked file should still work
+	assert.NotEmpty(t, result["main.go"])
+}
+
+// --- Tests for --since ---
+
+func setupSinceFixtureRepo(t *testing.T) (root string, outputFile string, baseRef string) {
+	t.Helper()
+	root = t.TempDir()
+	outputFile = filepath.Join(root, "out.md")
+
+	// First commit: base state
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "internal/auth"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "internal/auth/jwt.go"),
+		[]byte("package auth\n\nfunc OldFunc() {}\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "internal/auth/old.go"),
+		[]byte("package auth\n\nfunc Deprecated() {}\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.log\n"), 0644))
+	gitInit(t, root)
+
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = root
+	out, _ := cmd.Output()
+	baseRef = strings.TrimSpace(string(out))
+
+	// Second commit: modify jwt.go, add new.go, delete old.go
+	require.NoError(t, os.WriteFile(filepath.Join(root, "internal/auth/jwt.go"),
+		[]byte("package auth\n\nfunc OldFunc() {}\nfunc NewFunc(x int) error { return nil }\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "internal/auth/new.go"),
+		[]byte("package auth\n\nfunc BrandNew() string { return \"\" }\n"), 0644))
+	require.NoError(t, os.Remove(filepath.Join(root, "internal/auth/old.go")))
+
+	cmd = exec.Command("git", "add", "-A")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "commit", "-m", "second commit")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+
+	return root, outputFile, baseRef
+}
+
+func TestSinceOutputContainsAllSections(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "# Changes:")
+	assert.Contains(t, content, "## Map of Changed Files")
+	assert.Contains(t, content, "## Diff")
+	assert.Contains(t, content, "## File Contents")
+}
+
+func TestSinceOutputContainsDiff(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "```diff")
+	assert.Contains(t, content, "+func NewFunc(x int) error")
+}
+
+func TestSinceOutputContainsModifiedFileContent(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "### file: internal/auth/jwt.go [MODIFIED]")
+	assert.Contains(t, content, "func NewFunc(x int) error")
+}
+
+func TestSinceOutputContainsAddedFile(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "### file: internal/auth/new.go [ADDED]")
+	assert.Contains(t, content, "func BrandNew() string")
+}
+
+func TestSinceOutputExcludesDeletedFileContent(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "[D]")
+	assert.NotContains(t, content, "### file: internal/auth/old.go")
+	// Check func Deprecated doesn't appear in content section (it may appear in diff)
+	contentSection := content[strings.Index(content, "## File Contents"):]
+	assert.NotContains(t, contentSection, "func Deprecated()")
+}
+
+func TestSinceOutputExcludesUnchangedFiles(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.NotContains(t, content, "### file: main.go")
+	// Tree should not contain main.go
+	treeSection := content[strings.Index(content, "## Map"):strings.Index(content, "## Diff")]
+	assert.NotContains(t, treeSection, "main.go")
+}
+
+func TestSinceOutputContainsSignatures(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "func OldFunc()")
+	assert.Contains(t, content, "func NewFunc(x int) error")
+	assert.Contains(t, content, "func BrandNew() string")
+}
+
+func TestSinceTreeShowsChangeStatus(t *testing.T) {
+	root, outFile, baseRef := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: baseRef})
+
+	assert.Contains(t, content, "[M]")
+	assert.Contains(t, content, "[A]")
+	assert.Contains(t, content, "[D]")
+}
+
+func TestSinceWithRelativeRef(t *testing.T) {
+	root, outFile, _ := setupSinceFixtureRepo(t)
+	content := runAndRead(t, root, outFile, RunOptions{SinceRef: "HEAD~1"})
+
+	assert.Contains(t, content, "# Changes:")
+	assert.Contains(t, content, "internal/auth/jwt.go")
+}
+
+func TestSinceOutputFilename(t *testing.T) {
+	root, _, _ := setupSinceFixtureRepo(t)
+	expectedFile := filepath.Join(root, "dewdrops_since_HEAD_1.md")
+
+	// Clean up if exists
+	os.Remove(expectedFile)
+
+	err := Run(root, RunOptions{
+		SinceRef:   "HEAD~1",
+		OutputFile: filepath.Join(root, sinceOutputFileName("HEAD~1")),
+	})
+	require.NoError(t, err)
+
+	_, err = os.Stat(expectedFile)
+	assert.NoError(t, err, "expected auto-named output file to exist")
+}
+
+func TestSinceWithCustomOutput(t *testing.T) {
+	root, _, baseRef := setupSinceFixtureRepo(t)
+	customPath := filepath.Join(root, "custom_review.md")
+
+	err := Run(root, RunOptions{SinceRef: baseRef, OutputFile: customPath})
+	require.NoError(t, err)
+
+	_, err = os.Stat(customPath)
+	assert.NoError(t, err, "custom output file should exist")
+}
+
+func TestSinceInvalidRef(t *testing.T) {
+	root, _, _ := setupSinceFixtureRepo(t)
+	outFile := filepath.Join(root, "out.md")
+
+	err := Run(root, RunOptions{SinceRef: "nonexistent_branch_xyz", OutputFile: outFile})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid git ref")
+}
+
+func TestSinceNoChanges(t *testing.T) {
+	root, outFile, _ := setupSinceFixtureRepo(t)
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	err := Run(root, RunOptions{SinceRef: "HEAD", OutputFile: outFile})
+
+	w.Close()
+	stderrBytes := make([]byte, 4096)
+	n, _ := r.Read(stderrBytes)
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	assert.Contains(t, string(stderrBytes[:n]), "No changes found")
+}
+
+func TestSinceMutualExclusivityWithMap(t *testing.T) {
+	root, _, baseRef := setupSinceFixtureRepo(t)
+	outFile := filepath.Join(root, "out.md")
+
+	err := Run(root, RunOptions{SinceRef: baseRef, MapMode: true, OutputFile: outFile})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined")
+}
+
+func TestSinceMutualExclusivityWithFrom(t *testing.T) {
+	root, _, baseRef := setupSinceFixtureRepo(t)
+	outFile := filepath.Join(root, "out.md")
+
+	err := Run(root, RunOptions{SinceRef: baseRef, FromPaths: []string{"main.go"}, OutputFile: outFile})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined")
 }
