@@ -17,29 +17,97 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
+var version = "dev"
+
 const DefaultOutputFileName = "dewdrops_context.md"
 const warnTokenThreshold = 100_000
 
 // RunOptions configures the behavior of Run.
 type RunOptions struct {
 	MapMode    bool
+	MapFilter  string // "" = supported exts only, "any" = all textual, "go,py" = specific
 	FromPaths  []string
 	OutputFile string
 	SinceRef   string
 }
 
+// mapFlagValue implements flag.Value with IsBoolFlag so --map works without a value
+// and --map=go,py works with a value.
+type mapFlagValue struct {
+	enabled bool
+	filter  string
+}
+
+func (f *mapFlagValue) String() string   { return f.filter }
+func (f *mapFlagValue) IsBoolFlag() bool { return true }
+func (f *mapFlagValue) Set(s string) error {
+	f.enabled = true
+	if s == "true" {
+		f.filter = ""
+	} else {
+		f.filter = s
+	}
+	return nil
+}
+
+// supportedMapExts are extensions with real signature extraction patterns.
+// Config files (.yaml, .toml, .json, .env) are excluded — their fallback
+// (first 3 lines) produces noise. Include explicitly via --map=yaml,json.
+var supportedMapExts = map[string]bool{
+	".go": true, ".py": true, ".js": true, ".ts": true, ".jsx": true, ".tsx": true,
+	".rs": true, ".java": true, ".kt": true, ".rb": true, ".php": true,
+	".c": true, ".h": true, ".cpp": true, ".hpp": true,
+	".sh": true, ".bash": true,
+	".sql": true, ".md": true, ".markdown": true,
+}
+
+func filterMapExts(filePaths []string, filter string) []string {
+	if filter == "any" {
+		return filePaths
+	}
+
+	var allowed map[string]bool
+	if filter == "" {
+		allowed = supportedMapExts
+	} else {
+		allowed = make(map[string]bool)
+		for _, ext := range strings.Split(filter, ",") {
+			ext = strings.TrimSpace(ext)
+			if ext != "" {
+				if !strings.HasPrefix(ext, ".") {
+					ext = "." + ext
+				}
+				allowed[strings.ToLower(ext)] = true
+			}
+		}
+	}
+
+	var filtered []string
+	for _, fp := range filePaths {
+		ext := strings.ToLower(filepath.Ext(fp))
+		if allowed[ext] {
+			filtered = append(filtered, fp)
+		}
+	}
+	return filtered
+}
+
 func main() {
-	mapFlag := flag.Bool("map", false, "Output structural map instead of full file contents")
+	var mapVal mapFlagValue
+	flag.Var(&mapVal, "map", "Output structural map (use --map=go,py to filter by extension, --map=any for all text files)")
 	fromFlag := flag.String("from", "", "Comma-separated list of file/dir paths to include")
 	sinceFlag := flag.String("since", "", "Git ref to diff against HEAD (branch, tag, hash, HEAD~N)")
 	outputFlag := flag.String("o", "", "Output file path (default: dewdrops_context.md)")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: dewdrops [options] <repo-path>
 
 Options:
-  --map              Output structural map (tree + signatures + token estimates)
-                     instead of full file contents
+  --map[=exts]       Output structural map (tree + signatures + token estimates).
+                     Optionally filter by extensions (comma-separated, e.g.
+                     --map=go,py). Default: supported languages only.
+                     Use --map=any for all text files.
   --from <paths>     Only include specified files/dirs (comma-separated, relative
                      to repo root). Example: --from src/main.go,internal/auth/
   --since <ref>      Diff-aware output: map + diff + content for files changed
@@ -47,6 +115,7 @@ Options:
                      hashes, or relative refs like HEAD~3.
                      Cannot be combined with --map or --from.
   -o <path>          Output file path (default: dewdrops_context.md)
+  --version          Print version and exit
   -h, --help         Show this help message
 
 Examples:
@@ -60,6 +129,11 @@ Examples:
 	}
 	flag.Parse()
 
+	if *versionFlag {
+		fmt.Printf("dewdrops %s\n", version)
+		os.Exit(0)
+	}
+
 	if flag.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "Error: Missing required argument <repo-path>")
 		flag.Usage()
@@ -68,7 +142,8 @@ Examples:
 
 	rootDir := flag.Arg(0)
 	opts := RunOptions{
-		MapMode:    *mapFlag,
+		MapMode:    mapVal.enabled,
+		MapFilter:  mapVal.filter,
 		OutputFile: DefaultOutputFileName,
 	}
 	if *outputFlag != "" {
@@ -206,7 +281,7 @@ func Run(rootDir string, opts RunOptions) error {
 	writer := bufio.NewWriter(outFile)
 
 	if opts.MapMode {
-		stats := writeMapOutput(writer, rootDir, filePaths)
+		stats := writeMapOutput(writer, rootDir, filePaths, opts.MapFilter)
 		writer.Flush()
 		fi, _ := outFile.Stat()
 		fileSizeMB := float64(fi.Size()) / 1024 / 1024
@@ -391,8 +466,10 @@ type treeLine struct {
 	isDir   bool
 }
 
-func writeMapOutput(writer *bufio.Writer, rootDir string, filePaths []string) mapStats {
+func writeMapOutput(writer *bufio.Writer, rootDir string, filePaths []string, mapFilter string) mapStats {
 	var stats mapStats
+
+	filePaths = filterMapExts(filePaths, mapFilter)
 
 	tokenMap := make(map[string]int)
 	sigMap := make(map[string][]string)
@@ -621,46 +698,46 @@ var (
 		regexp.MustCompile(`^async def `),
 	}
 	jsSigPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^export `),
-		regexp.MustCompile(`^function `),
-		regexp.MustCompile(`^class `),
-		regexp.MustCompile(`^interface `),
-		regexp.MustCompile(`^type `),
-		regexp.MustCompile(`^const .*=>`),
-		regexp.MustCompile(`^async function `),
+		regexp.MustCompile(`^\s*export `),
+		regexp.MustCompile(`^\s*function `),
+		regexp.MustCompile(`^\s*class `),
+		regexp.MustCompile(`^\s*interface `),
+		regexp.MustCompile(`^\s*type `),
+		regexp.MustCompile(`^\s*const .*=>`),
+		regexp.MustCompile(`^\s*async function `),
 	}
 	rsSigPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^pub fn `),
-		regexp.MustCompile(`^fn `),
-		regexp.MustCompile(`^pub struct `),
-		regexp.MustCompile(`^struct `),
-		regexp.MustCompile(`^enum `),
-		regexp.MustCompile(`^pub enum `),
-		regexp.MustCompile(`^trait `),
-		regexp.MustCompile(`^impl `),
+		regexp.MustCompile(`^\s*pub fn `),
+		regexp.MustCompile(`^\s*fn `),
+		regexp.MustCompile(`^\s*pub struct `),
+		regexp.MustCompile(`^\s*struct `),
+		regexp.MustCompile(`^\s*enum `),
+		regexp.MustCompile(`^\s*pub enum `),
+		regexp.MustCompile(`^\s*trait `),
+		regexp.MustCompile(`^\s*impl `),
 	}
 	javaSigPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^public `),
-		regexp.MustCompile(`^private `),
-		regexp.MustCompile(`^protected `),
-		regexp.MustCompile(`^class `),
-		regexp.MustCompile(`^interface `),
-		regexp.MustCompile(`^enum `),
-		regexp.MustCompile(`^abstract `),
+		regexp.MustCompile(`^\s*public `),
+		regexp.MustCompile(`^\s*private `),
+		regexp.MustCompile(`^\s*protected `),
+		regexp.MustCompile(`^\s*class `),
+		regexp.MustCompile(`^\s*interface `),
+		regexp.MustCompile(`^\s*enum `),
+		regexp.MustCompile(`^\s*abstract `),
 	}
 	rbSigPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^class `),
-		regexp.MustCompile(`^module `),
-		regexp.MustCompile(`^def `),
+		regexp.MustCompile(`^\s*class `),
+		regexp.MustCompile(`^\s*module `),
+		regexp.MustCompile(`^\s*def `),
 	}
 	phpSigPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^class `),
-		regexp.MustCompile(`^function `),
-		regexp.MustCompile(`^interface `),
-		regexp.MustCompile(`^trait `),
-		regexp.MustCompile(`^public function `),
-		regexp.MustCompile(`^private function `),
-		regexp.MustCompile(`^protected function `),
+		regexp.MustCompile(`^\s*class `),
+		regexp.MustCompile(`^\s*function `),
+		regexp.MustCompile(`^\s*interface `),
+		regexp.MustCompile(`^\s*trait `),
+		regexp.MustCompile(`^\s*public function `),
+		regexp.MustCompile(`^\s*private function `),
+		regexp.MustCompile(`^\s*protected function `),
 	}
 	cSigPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`^typedef `),
