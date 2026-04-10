@@ -129,7 +129,7 @@ func runAndRead(t *testing.T, root string, outputFile string, opts RunOptions) s
 
 func TestMapOutputContainsTree(t *testing.T) {
 	root, outFile := setupFixtureRepo(t)
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.Contains(t, content, "# Repository Map:")
 	assert.Contains(t, content, "## Structure")
@@ -148,7 +148,7 @@ func TestMapOutputContainsTree(t *testing.T) {
 
 func TestMapOutputContainsSignatures(t *testing.T) {
 	root, outFile := setupFixtureRepo(t)
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.Contains(t, content, "## Signatures")
 	assert.Contains(t, content, "func main()")
@@ -162,7 +162,7 @@ func TestMapOutputContainsSignatures(t *testing.T) {
 
 func TestMapOutputContainsTokenEstimates(t *testing.T) {
 	root, outFile := setupFixtureRepo(t)
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.Contains(t, content, "tok")
 	assert.Contains(t, content, "tokens (estimated)")
@@ -170,7 +170,7 @@ func TestMapOutputContainsTokenEstimates(t *testing.T) {
 
 func TestMapOutputDoesNotContainFileContents(t *testing.T) {
 	root, outFile := setupFixtureRepo(t)
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.NotContains(t, content, "```go\npackage main")
 	assert.NotContains(t, content, "### file:")
@@ -197,7 +197,7 @@ async def fetch_data(url):
 	cmd.Dir = root
 	require.NoError(t, cmd.Run())
 
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.Contains(t, content, "class MyClass:")
 	assert.Contains(t, content, "def standalone(a, b):")
@@ -217,7 +217,7 @@ func TestMapFallbackSignatures(t *testing.T) {
 	cmd.Dir = root
 	require.NoError(t, cmd.Run())
 
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.Contains(t, content, "First line")
 	assert.Contains(t, content, "Second line")
@@ -236,7 +236,7 @@ func TestMapSignatureExtractionMarkdown(t *testing.T) {
 	cmd.Dir = root
 	require.NoError(t, cmd.Run())
 
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
 
 	assert.Contains(t, content, "# My Project")
 	assert.Contains(t, content, "## Installation")
@@ -244,6 +244,46 @@ func TestMapSignatureExtractionMarkdown(t *testing.T) {
 	assert.Contains(t, content, "### Advanced")
 	assert.NotContains(t, content, "Some intro text.")
 	assert.NotContains(t, content, "Run this.")
+}
+
+func TestMapSignatureExtractionPHP(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	phpContent := `<?php
+
+namespace App\Policies;
+
+class UserPolicy
+{
+    public function viewAny(User $user): bool
+    {
+        return true;
+    }
+
+    protected function isAdmin(User $user): bool
+    {
+        return false;
+    }
+
+    private function logAccess(): void
+    {
+    }
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "UserPolicy.php"), []byte(phpContent), 0644))
+	cmd := exec.Command("git", "add", "UserPolicy.php")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "commit", "-m", "add php")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
+
+	assert.Contains(t, content, "class UserPolicy")
+	assert.Contains(t, content, "public function viewAny(User $user): bool")
+	assert.Contains(t, content, "protected function isAdmin(User $user): bool")
+	assert.Contains(t, content, "private function logAccess(): void")
 }
 
 // --- Tests for --from ---
@@ -364,7 +404,7 @@ func TestFromTreeIsScoped(t *testing.T) {
 
 func TestMapWithFrom(t *testing.T) {
 	root, outFile := setupFixtureRepo(t)
-	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, FromPaths: []string{"internal/auth/"}})
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any", FromPaths: []string{"internal/auth/"}})
 
 	assert.Contains(t, content, "# Repository Map:")
 	// Signatures from auth files
@@ -385,6 +425,67 @@ func TestDefaultBehaviorUnchanged(t *testing.T) {
 	assert.Contains(t, content, "### file: internal/auth/jwt.go")
 	assert.Contains(t, content, "### file: README.md")
 	assert.Contains(t, content, "# Test Project")
+}
+
+// --- Tests for --map extension filter ---
+
+func TestMapFilterDefaultExcludesNoise(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	// Add noise files
+	require.NoError(t, os.WriteFile(filepath.Join(root, "config.yaml"), []byte("key: value\nfoo: bar\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "data.json"), []byte("{\"a\":1}\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "notes.txt"), []byte("some notes\nline 2\n"), 0644))
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "commit", "-m", "add noise files")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+
+	// Default --map (filter="" = supported only)
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: ""})
+
+	// Should include Go and Markdown (supported)
+	assert.Contains(t, content, "main.go")
+	assert.Contains(t, content, "README.md")
+	// Should exclude config/text files
+	assert.NotContains(t, content, "config.yaml")
+	assert.NotContains(t, content, "data.json")
+	assert.NotContains(t, content, "notes.txt")
+}
+
+func TestMapFilterSpecificExts(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	// --map=go includes only .go files
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "go"})
+
+	assert.Contains(t, content, "main.go")
+	assert.Contains(t, content, "jwt.go")
+	assert.NotContains(t, content, "README.md")
+	assert.NotContains(t, content, ".gitignore")
+}
+
+func TestMapFilterAnyIncludesAll(t *testing.T) {
+	root, outFile := setupFixtureRepo(t)
+
+	// Add a text file
+	require.NoError(t, os.WriteFile(filepath.Join(root, "notes.txt"), []byte("some notes\nline 2\n"), 0644))
+	cmd := exec.Command("git", "add", "notes.txt")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "commit", "-m", "add txt")
+	cmd.Dir = root
+	require.NoError(t, cmd.Run())
+
+	// --map=any includes everything textual
+	content := runAndRead(t, root, outFile, RunOptions{MapMode: true, MapFilter: "any"})
+
+	assert.Contains(t, content, "main.go")
+	assert.Contains(t, content, "README.md")
+	assert.Contains(t, content, "notes.txt")
+	assert.Contains(t, content, ".gitignore")
 }
 
 // --- Tests for oversize warning ---
