@@ -35,7 +35,7 @@ to the repository URL.
 
 ## Installation
 
-### Option 1: Download the latest release binary (Recommended)
+### Option 1: Installation Script (Recommended for Linux Users)
 
 ```bash
 wget https://raw.githubusercontent.com/MedUnes/dewdrops/master/latest.sh && \
@@ -44,7 +44,12 @@ chmod +x latest.sh && \
 rm ./latest.sh
 ```
 
-### Option 2: Build from Source
+### Option 2: Download Precompiled Binary (For All Platforms)
+
+Refer to the [releases page](https://github.com/MedUnes/dewdrops/releases/latest), then download your desired binary
+from there.
+
+### Option 3: Build from Source
 
 You need [Go 1.25+](https://go.dev/dl/) installed.
 
@@ -242,7 +247,7 @@ Prints the version string. Release binaries show the version tag (e.g. `dewdrops
 | `dewdrops --from internal/ .`            | Full dump scoped to a directory            |
 | `dewdrops --map --from a.go .`           | Map scoped to specified files              |
 | `dewdrops --map=go --from internal/ .`   | Map of .go files in a directory            |
-| `dewdrops --since main .`                | Composite: map + diff + content of changes |
+| `dewdrops --since v0.3.1 .`              | Composite: map + diff + content of changes |
 | `dewdrops --since HEAD~3 -o review.md .` | Composite, custom output path              |
 | `dewdrops -o out.md .`                   | Full dump, custom output path              |
 | `dewdrops -o out.md --map .`             | Map, custom output path                    |
@@ -260,8 +265,8 @@ Prints the version string. Release binaries show the version tag (e.g. `dewdrops
 
 This two-step approach can reduce token usage by 90%+ compared to dumping the entire repo upfront.
 
-For code reviews, use `dewdrops --since main .` to generate a self-contained review document and paste it into your LLM
-with "Review these changes."
+For code reviews, use for example `dewdrops --since "HEAD^" .` to generate a self-contained review document since last
+commit and paste it into your LLM with "Review these changes."
 
 ## Why use this over existing tools?
 
@@ -281,4 +286,4 @@ requirements:
 
 ## License
 
-MIT
+[MIT](./LICENSE)
