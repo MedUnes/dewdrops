@@ -6,6 +6,7 @@ REPO="dewdrops"
 BINARY_NAME="dewdrops"
 RELEASE_PATTERN="dewdrops_Linux_x86_64.tar.gz"
 CHECKSUM_PATTERN="checksums.txt"
+BINARY_PATH=/usr/local/bin
 
 if ! command -v curl &> /dev/null; then
     echo "Error: curl is not installed. Please install it."
@@ -88,9 +89,13 @@ chmod +x "$BINARY_NAME"
 echo "Cleaning up downloaded files."
 
 rm "$CHECKSUM_FILE" "$RELEASE_FILE"
+echo "Copying binary to binary directory /usr/local/bin (requires sudo).."
 
-./$BINARY_NAME
+sudo mv $BINARY_NAME $BINARY_PATH
 
+echo "$BINARY_NAME successfully installed!"
+echo "$BINARY_NAME --version"
+$BINARY_NAME --version
 
 exit 0
 
