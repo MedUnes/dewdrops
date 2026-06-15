@@ -231,18 +231,18 @@ export DEWDROPS_API_KEY=sk-...
 dewdrops review \
   --since main \
   --model qwen3-coder \
-  --base-url https://host/v1/openai/compat \
+  --base-url https://host/v1/openai \
   . > review.md
 ```
 
-| Flag             | Required | Default            | Notes                                              |
-|------------------|----------|--------------------|----------------------------------------------------|
-| `--since <ref>`  | yes      | —                  | Git ref to diff against HEAD.                      |
-| `--model <name>` | yes      | env `DEWDROPS_MODEL`    | Model identifier sent in the request body.    |
-| `--base-url <url>` | yes    | env `DEWDROPS_BASE_URL` | Request goes to `<base-url>/chat/completions`. |
-| `--prompt-file <path>` | no | embedded default   | System prompt override.                            |
-| `--max-tokens <int>` | no   | `8192`             | Response token budget.                              |
-| `--timeout <seconds>` | no  | `240`              | HTTP timeout.                                       |
+| Flag                   | Required | Default                 | Notes                                          |
+|------------------------|----------|-------------------------|------------------------------------------------|
+| `--since <ref>`        | yes      | —                       | Git ref to diff against HEAD.                  |
+| `--model <name>`       | yes      | env `DEWDROPS_MODEL`    | Model identifier sent in the request body.     |
+| `--base-url <url>`     | yes      | env `DEWDROPS_BASE_URL` | Request goes to `<base-url>/chat/completions`. |
+| `--prompt-file <path>` | no       | embedded default        | System prompt override.                        |
+| `--max-tokens <int>`   | no       | `8192`                  | Response token budget.                         |
+| `--timeout <seconds>`  | no       | `240`                   | HTTP timeout.                                  |
 
 If there are no changes vs `<ref>`, nothing is written to stdout and the command exits `0`.
 Exit codes: `0` success or no-changes · `2` usage / missing required config · `1` runtime
@@ -255,7 +255,7 @@ orchestration deliberately lives outside the tool:
 export DEWDROPS_API_KEY=sk-...
 for model in qwen3-coder llama-3.3-70b deepseek-v3; do
   dewdrops review --since main --model "$model" \
-    --base-url https://host/v1/openai/compat . > "review.$model.md"
+    --base-url https://host/v1/openai . > "review.$model.md"
 done
 ```
 
@@ -282,24 +282,24 @@ Prints the version string. Release binaries show the version tag (e.g. `dewdrops
 
 ## Flag combination matrix
 
-| Flags                                    | Behavior                                   |
-|------------------------------------------|--------------------------------------------|
-| `dewdrops .`                             | Full dump of all files                     |
-| `dewdrops --map .`                       | Map with supported extensions only         |
-| `dewdrops --map=any .`                   | Map with all text files                    |
-| `dewdrops --map=go,py .`                 | Map with only .go and .py files            |
-| `dewdrops --from a.go,b.go .`            | Full dump scoped to specified files        |
-| `dewdrops --from internal/ .`            | Full dump scoped to a directory            |
-| `dewdrops --map --from a.go .`           | Map scoped to specified files              |
-| `dewdrops --map=go --from internal/ .`   | Map of .go files in a directory            |
-| `dewdrops --since v0.3.1 .`              | Composite: map + diff + content of changes |
-| `dewdrops --since HEAD~3 -o review.md .` | Composite, custom output path              |
+| Flags                                                   | Behavior                                                           |
+|---------------------------------------------------------|--------------------------------------------------------------------|
+| `dewdrops .`                                            | Full dump of all files                                             |
+| `dewdrops --map .`                                      | Map with supported extensions only                                 |
+| `dewdrops --map=any .`                                  | Map with all text files                                            |
+| `dewdrops --map=go,py .`                                | Map with only .go and .py files                                    |
+| `dewdrops --from a.go,b.go .`                           | Full dump scoped to specified files                                |
+| `dewdrops --from internal/ .`                           | Full dump scoped to a directory                                    |
+| `dewdrops --map --from a.go .`                          | Map scoped to specified files                                      |
+| `dewdrops --map=go --from internal/ .`                  | Map of .go files in a directory                                    |
+| `dewdrops --since v0.3.1 .`                             | Composite: map + diff + content of changes                         |
+| `dewdrops --since HEAD~3 -o review.md .`                | Composite, custom output path                                      |
 | `dewdrops review --since main --model M --base-url U .` | LLM review of changes to stdout (online; needs `DEWDROPS_API_KEY`) |
-| `dewdrops -o out.md .`                   | Full dump, custom output path              |
-| `dewdrops -o out.md --map .`             | Map, custom output path                    |
-| `dewdrops --since X --map .`             | **ERROR**: mutually exclusive              |
-| `dewdrops --since X --from Y .`          | **ERROR**: mutually exclusive              |
-| `dewdrops --version`                     | Print version and exit                     |
+| `dewdrops -o out.md .`                                  | Full dump, custom output path                                      |
+| `dewdrops -o out.md --map .`                            | Map, custom output path                                            |
+| `dewdrops --since X --map .`                            | **ERROR**: mutually exclusive                                      |
+| `dewdrops --since X --from Y .`                         | **ERROR**: mutually exclusive                                      |
+| `dewdrops --version`                                    | Print version and exit                                             |
 
 ## Typical workflow
 
