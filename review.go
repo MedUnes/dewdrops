@@ -174,7 +174,11 @@ func runReview(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if err != nil {
 		fmt.Fprintf(stderr, "dewdrops review: %v\n", err)
 		return 1
-	}fmt.Fprint(stdout, review)
+	}
+
+	// Write straight to stdout (unbuffered) so the os.Exit(runReview(...))
+	// caller can't drop a buffered tail.
+	fmt.Fprint(stdout, review)
 	return 0
 }
 
