@@ -3,7 +3,7 @@ module dewdrops
 go 1.25.6
 
 require (
-	github.com/go-git/go-git/v5 v5.19.0
+	github.com/go-git/go-git/v5 v5.19.1
 	github.com/stretchr/testify v1.11.1
 )
 
