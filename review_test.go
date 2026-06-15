@@ -130,9 +130,9 @@ func TestParseReviewResponse(t *testing.T) {
 }
 
 func TestBuildChatURL(t *testing.T) {
-	const want = "https://host/v1/openai/compat/chat/completions"
-	assert.Equal(t, want, buildChatURL("https://host/v1/openai/compat"))
-	assert.Equal(t, want, buildChatURL("https://host/v1/openai/compat/"))
+	const want = "https://host/v1/openai/chat/completions"
+	assert.Equal(t, want, buildChatURL("https://host/v1/openai"))
+	assert.Equal(t, want, buildChatURL("https://host/v1/openai/"))
 }
 
 // --- requestReview tests (request shape + transport errors) ---

@@ -46,7 +46,7 @@ stdout. This is the one online mode; every other dewdrops mode stays offline.
 Required:
   --since <ref>        Git ref to diff against HEAD (same semantics as top-level --since).
   --model <name>       Model identifier sent in the request body. (or env DEWDROPS_MODEL)
-  --base-url <url>     Endpoint base, e.g. https://host/v1/.../compat. (or env DEWDROPS_BASE_URL)
+  --base-url <url>     Endpoint base, e.g. https://host/v1/.... (or env DEWDROPS_BASE_URL)
                        The request goes to <base-url>/chat/completions.
 
 Optional:
@@ -167,7 +167,7 @@ func runReview(args []string, getenv func(string) string, stdout, stderr io.Writ
 		apiKey:       apiKey,
 		systemPrompt: systemPrompt,
 		maxTokens:    *maxTokens,
-		timeout: time.Duration(*timeoutSec) * time.Second,
+		timeout:      time.Duration(*timeoutSec) * time.Second,
 	}
 
 	review, err := requestReview(newDoer(cfg.timeout), cfg, buf.String())
