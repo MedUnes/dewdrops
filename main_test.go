@@ -72,8 +72,8 @@ func setupFixtureRepo(t *testing.T) (string, string) {
 	outputFile := filepath.Join(root, "dewdrops_test_output.md")
 
 	files := map[string]string{
-		"main.go": "package main\n\nfunc main() {}\nfunc helper(x int) string { return \"\" }\n",
-		"internal/auth/jwt.go": "package auth\n\ntype Claims struct {\n\tUserID string\n}\n\nfunc NewToken(user string) (string, error) { return \"\", nil }\nfunc ValidateToken(raw string) (*Claims, error) { return nil, nil }\n",
+		"main.go":                     "package main\n\nfunc main() {}\nfunc helper(x int) string { return \"\" }\n",
+		"internal/auth/jwt.go":        "package auth\n\ntype Claims struct {\n\tUserID string\n}\n\nfunc NewToken(user string) (string, error) { return \"\", nil }\nfunc ValidateToken(raw string) (*Claims, error) { return nil, nil }\n",
 		"internal/auth/middleware.go": "package auth\n\nfunc RequireAuth(next int) int { return next }\n",
 		"internal/store/db.go":        "package store\n\ntype Store struct {\n\tDSN string\n}\n\nfunc NewStore(dsn string) *Store { return nil }\nfunc (s *Store) GetUser(id string) string { return \"\" }\n",
 		"README.md":                   "# Test Project\n\nThis is a test.\n",

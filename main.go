@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 var version = "dev"
@@ -29,6 +31,13 @@ func (f *mapFlagValue) Set(s string) error {
 }
 
 func main() {
+	// The `review` subcommand has its own flag set and code path; dispatch
+	// before the default flag parsing so the existing CLI is untouched.
+	if len(os.Args) > 1 && os.Args[1] == "review" {
+		os.Exit(runReview(os.Args[2:], os.Getenv, os.Stdout, os.Stderr,
+			func(t time.Duration) HTTPDoer { return &http.Client{Timeout: t} }))
+	}
+
 	var mapVal mapFlagValue
 	flag.Var(&mapVal, "map", "Output structural map (use --map=go,py to filter by extension, --map=any for all text files)")
 	fromFlag := flag.String("from", "", "Comma-separated list of file/dir paths to include")
@@ -54,6 +63,13 @@ Options:
   --version          Print version and exit
   -h, --help         Show this help message
 
+Subcommands:
+  review             Send the --since composite to an OpenAI-compatible LLM and
+                     print the review to stdout (the one online mode; requires
+                     DEWDROPS_API_KEY). Run 'dewdrops review -h' for details.
+                     A directory literally named 'review' must be passed as
+                     './review' since the subcommand name shadows the positional.
+
 Examples:
   dewdrops .                                        # Full repo dump
   dewdrops --map .                                  # Structural overview only
@@ -61,6 +77,7 @@ Examples:
   dewdrops --map --from internal/auth/,cmd/ .       # Map of specific subtree
   dewdrops --since main .                           # Review changes vs main
   dewdrops --since HEAD~3 -o review.md .            # Last 3 commits, custom path
+  dewdrops review --since main --model M --base-url U .   # LLM review to stdout
 `)
 	}
 	flag.Parse()
