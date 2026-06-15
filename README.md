@@ -214,6 +214,51 @@ Output Size         : 0.034 MB (dewdrops_since_main.md)
 ------------------------------------------------
 ```
 
+### Change review via LLM (`review`)
+
+`review` is the **one online mode**. Every other dewdrops mode is fully offline / air-gapped;
+`review` is the single exception that talks to the network. It generates the same `--since`
+composite (map + diff + content), sends it to an OpenAI-compatible `/chat/completions`
+endpoint, and writes the model's review to **stdout** — nothing else. The CLI banner and all
+diagnostics go to stderr, so stdout stays clean for piping or redirection.
+
+It requires an API key, supplied **only** via the `DEWDROPS_API_KEY` environment variable
+(never a flag, so it can't leak into argv / process lists / shell history):
+
+```bash
+export DEWDROPS_API_KEY=sk-...
+
+dewdrops review \
+  --since main \
+  --model qwen3-coder \
+  --base-url https://host/v1/openai/compat \
+  . > review.md
+```
+
+| Flag             | Required | Default            | Notes                                              |
+|------------------|----------|--------------------|----------------------------------------------------|
+| `--since <ref>`  | yes      | —                  | Git ref to diff against HEAD.                      |
+| `--model <name>` | yes      | env `DEWDROPS_MODEL`    | Model identifier sent in the request body.    |
+| `--base-url <url>` | yes    | env `DEWDROPS_BASE_URL` | Request goes to `<base-url>/chat/completions`. |
+| `--prompt-file <path>` | no | embedded default   | System prompt override.                            |
+| `--max-tokens <int>` | no   | `8192`             | Response token budget.                              |
+| `--timeout <seconds>` | no  | `240`              | HTTP timeout.                                       |
+
+If there are no changes vs `<ref>`, nothing is written to stdout and the command exits `0`.
+Exit codes: `0` success or no-changes · `2` usage / missing required config · `1` runtime
+failure (generation error, HTTP non-200, empty/unparseable response, timeout).
+
+**Multiple models?** That's the caller's job — one invocation is one model. Loop in the shell;
+orchestration deliberately lives outside the tool:
+
+```bash
+export DEWDROPS_API_KEY=sk-...
+for model in qwen3-coder llama-3.3-70b deepseek-v3; do
+  dewdrops review --since main --model "$model" \
+    --base-url https://host/v1/openai/compat . > "review.$model.md"
+done
+```
+
 ### Custom output path (`-o`)
 
 Write output to a specific file instead of the default:
@@ -249,6 +294,7 @@ Prints the version string. Release binaries show the version tag (e.g. `dewdrops
 | `dewdrops --map=go --from internal/ .`   | Map of .go files in a directory            |
 | `dewdrops --since v0.3.1 .`              | Composite: map + diff + content of changes |
 | `dewdrops --since HEAD~3 -o review.md .` | Composite, custom output path              |
+| `dewdrops review --since main --model M --base-url U .` | LLM review of changes to stdout (online; needs `DEWDROPS_API_KEY`) |
 | `dewdrops -o out.md .`                   | Full dump, custom output path              |
 | `dewdrops -o out.md --map .`             | Map, custom output path                    |
 | `dewdrops --since X --map .`             | **ERROR**: mutually exclusive              |

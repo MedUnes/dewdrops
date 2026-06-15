@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **Multi-file layout**: Refactored from single `main.go` (~1,100 lines) into 7 focused files: `main.go`, `run.go`, `git.go`, `tree.go`, `signatures.go`, `writers.go`, `util.go`. No behavioral changes.
-- **Unified tree renderer**: Replaced `treeNode.modTime` / `treeLine.modTime` field overloading with explicit `annotation` + `showTokens` fields. Deleted `formatSinceTreeOutput` — unified into single `formatTreeOutput`.
+- **Unified tree renderer**: Replaced `treeNode.modTime` / `treeLine.modTime` field overloading with explicit `annotation` + `showTokens` fields. Deleted `formatSinceTreeOutput`,  unified into single `formatTreeOutput`.
 - **`displayWidth`** now uses `utf8.RuneCountInString` (idiomatic Go).
 - **Git stderr suppressed**: All `exec.Command("git", ...)` calls now set `cmd.Stderr = nil` to prevent git warnings leaking to the user's terminal.
 - **Scanning message** now prints to stderr (Unix convention: diagnostics to stderr).
